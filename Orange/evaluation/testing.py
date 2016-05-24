@@ -743,9 +743,9 @@ class Evaluation(object):
             for c, classifier in enumerate(classifiers):
                 # Hide actual class to prevent cheating
                 ex2 = Orange.data.Instance(example)
-                if ex2.domain.class_var: ex2.setclass("?")
-                if ex2.domain.class_vars: ex2.set_classes(["?" for _ in ex2
-                .domain.class_vars])
+                #if ex2.domain.class_var: ex2.setclass("?")
+                #if ex2.domain.class_vars: ex2.set_classes(["?" for _ in ex2
+                #.domain.class_vars])
                 result = classifier(ex2, Orange.core.GetBoth)
                 results.append((e, c, result))
         return results

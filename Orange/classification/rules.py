@@ -2,6 +2,7 @@ import random
 import math
 import operator
 import numpy
+import scipy.optimize as so
 
 import Orange
 import Orange.core
@@ -312,6 +313,72 @@ class CN2UnorderedLearner(RuleLearner):
         return CN2UnorderedClassifier(rules, instances, weight_id)
 
 
+class CN2UnorderedLearner(RuleLearner):
+    """
+    Unordered CN2 (Clark and Boswell; 1991) induces a set of unordered
+    rules. Learning rules is quite similar to learning in classical
+    CN2, where the process of learning of rules is separated to
+    learning rules for each class.
+
+    Constructor returns either an instance of
+    :obj:`CN2UnorderedLearner` or, if training data is provided, a
+    :obj:`CN2UnorderedClassifier`.
+
+    :param evaluator: an object that evaluates a rule from covered instances.
+        By default, Laplace's rule of succession is used as a measure.
+    :type evaluator: :class:`~Orange.classification.rules.Evaluator`
+    :param beam_width: width of the search beam.
+    :type beam_width: int
+    :param alpha: significance level of the likelihood ratio statistics to
+        determine whether rule is better than the default rule.
+    :type alpha: float
+    """
+    def __new__(cls, instances=None, weight_id=0, **kwargs):
+        self = RuleLearner.__new__(cls, **kwargs)
+        if instances is not None:
+            self.__init__(**kwargs)
+            return self.__call__(instances, weight_id)
+        else:
+            return self
+
+    def __init__(self, evaluator=Evaluator_Laplace(), beam_width=5,
+        alpha=1.0, **kwds):
+        self.__dict__.update(kwds)
+        self.rule_finder = BeamFinder()
+        self.rule_finder.ruleFilter = BeamFilter_Width(width=beam_width)
+        self.rule_finder.evaluator = evaluator
+        self.rule_finder.validator = Validator_LRS(alpha=alpha)
+        self.rule_finder.rule_stoppingValidator = Validator_LRS(alpha=1.0)
+        self.rule_stopping = Stopping_Apriori()
+        self.data_stopping = DataStoppingCriteria_NoPositives()
+
+    @deprecated_keywords({"weight": "weight_id"})
+    def __call__(self, instances, weight_id=0):
+        supervisedClassCheck(instances)
+
+        rules = RuleList()
+        self.rule_stopping.apriori = Orange.statistics.distribution.Distribution(
+            instances.domain.class_var, instances)
+        progress = getattr(self, "progressCallback", None)
+        if progress:
+            progress.start = 0.0
+            progress.end = 0.0
+            distrib = Orange.statistics.distribution.Distribution(
+                instances.domain.class_var, instances, weight_id)
+            distrib.normalize()
+        for target_class in instances.domain.class_var:
+            if progress:
+                progress.start = progress.end
+                progress.end += distrib[target_class]
+            self.target_class = target_class
+            cl = RuleLearner.__call__(self, instances, weight_id)
+            for r in cl.rules:
+                rules.append(r)
+        if progress:
+            progress(1.0, None)
+        return CN2UnorderedClassifier(rules, instances, weight_id)
+
+
 class CN2UnorderedClassifier(RuleClassifier):
     """
     Unordered CN2 classifier (Clark and Boswell; 1991) classifies an
@@ -532,10 +599,10 @@ class ABCN2(RuleLearner):
 
     """
 
-    def __init__(self, argument_id=0, width=5, m=2, opt_reduction=2, nsampling=100, max_rule_complexity=5,
+    def __init__(self, argument_id=0, width=5, m=2, max_rules=-1, opt_reduction=2, nsampling=100, max_rule_complexity=5,
                  rule_sig=1.0, att_sig=1.0, postpruning=None, min_quality=0., min_coverage=1, min_improved=1, min_improved_perc=0.0,
                  learn_for_class=None, learn_one_rule=False, evd=None, evd_arguments=None, prune_arguments=False, analyse_argument= -1,
-                 alternative_learner=None, min_cl_sig=0.5, min_beta=0.0, set_prefix_rules=False, add_sub_rules=True, debug=False,
+                 alternative_learner=None, min_cl_sig=0.5, min_beta=0.0, set_prefix_rules=False, add_sub_rules=False, debug=False,
                  **kwds):
 
         # argument ID which is passed to abcn2 learner
@@ -546,14 +613,17 @@ class ABCN2(RuleLearner):
         self.analyse_argument = analyse_argument
         # should we learn only one rule?
         self.learn_one_rule = learn_one_rule
+        # how many rules should we learn?
+        self.max_rules = max_rules
         self.postpruning = postpruning
         # rule finder
         self.rule_finder = BeamFinder()
-        self.ruleFilter = BeamFilter_Width(width=width)
+        #self.ruleFilter = BeamFilter_Width(width=width)
+        self.ruleFilter = BeamFilterAllExamples(width=width)
         self.ruleFilter_arguments = ABBeamFilter(width=width)
         if max_rule_complexity - 1 < 0:
             max_rule_complexity = 10
-        self.rule_finder.rule_stoppingValidator = Validator_LRS(alpha=1.0, min_quality=0., max_rule_complexity=max_rule_complexity - 1, min_coverage=min_coverage)
+        self.rule_finder.rule_stoppingValidator = Validator_LRS(alpha=1.0, min_quality=-100., max_rule_complexity=max_rule_complexity, min_coverage=min_coverage)
         self.refiner = BeamRefiner_Selector()
         self.refiner_arguments = SelectorAdder(discretizer=Orange.feature.discretization.Entropy(forceAttribute=1,
                                                                                            maxNumberOfIntervals=2))
@@ -565,7 +635,7 @@ class ABCN2(RuleLearner):
         self.rule_finder.evaluator.optimismReduction = opt_reduction
         self.rule_finder.evaluator.ruleAlpha = rule_sig
         self.rule_finder.evaluator.attributeAlpha = att_sig
-        self.rule_finder.evaluator.validator = Validator_LRS(alpha=1.0, min_quality=min_quality, min_coverage=min_coverage, max_rule_complexity=max_rule_complexity - 1)
+        self.rule_finder.evaluator.validator = Validator_LRS(alpha=1.0, min_quality=min_quality, min_coverage=min_coverage, max_rule_complexity=max_rule_complexity)
 
         # learn stopping criteria
         self.rule_stopping = None
@@ -578,6 +648,10 @@ class ABCN2(RuleLearner):
         self.add_sub_rules = add_sub_rules
         self.classifier = PILAR(alternative_learner=alternative_learner, min_cl_sig=min_cl_sig, min_beta=min_beta, set_prefix_rules=set_prefix_rules)
         self.debug = debug
+        # initial probabilities (if rules are correcting another classifier)
+        # set externally 
+        self.probabilities = None
+        
         # arbitrary parameters
         self.__dict__.update(kwds)
 
@@ -632,6 +706,7 @@ class ABCN2(RuleLearner):
                     isinstance(self.analyse_argument, int) and not dich_data[self.analyse_argument] == aes[0]):
                     aes = aes[1:]
                     continue
+
                 ae = aes[0]
                 rule = self.learn_argumented_rule(ae, dich_data, weight_id) # target class is always first class (0)
                 if self.debug and rule:
@@ -656,9 +731,24 @@ class ABCN2(RuleLearner):
             # learn normal rules on remaining examples
             if self.analyse_argument == -1:
                 self.turn_normal_mode(dich_data, weight_id, cl_i)
+                count = 0
                 while dich_data:
+                    count += 1
                     # learn a rule
+                    self.ruleFilter.reset()
                     rule, good_rule = self.learn_normal_rule(dich_data, weight_id, self.apriori)
+                    # get rules
+                    brules = self.ruleFilter.best_rules
+                    rset = set()
+                    for r in brules:
+                        str_rule = rule_to_string(r)
+                        if r != None and str_rule not in rset:
+                            r.quality = r.finQuality
+                            rset.add(str_rule)
+                            rules.append(r)
+                    #print "rules", len(rules)
+                    break
+
                     if not rule:
                         break
                     if self.debug:
@@ -675,9 +765,11 @@ class ABCN2(RuleLearner):
                         rules.append(rule)
                     if self.learn_one_rule:
                         break
+                    if self.max_rules > -1 and count > self.max_rules:
+                        break
 
             # prune unnecessary rules
-            rules = self.prune_unnecessary_rules(rules, dich_data, weight_id)
+            #rules = self.prune_unnecessary_rules(rules, dich_data, weight_id)
 
             if self.add_sub_rules:
                 rules = self.add_sub_rules_call(rules, dich_data, weight_id)
@@ -721,7 +813,10 @@ class ABCN2(RuleLearner):
                                 examples.domain.class_var, examples, weight_id)
 
         # prepare covering mechanism
-        self.coverAndRemove = CovererAndRemover_Prob(examples, weight_id, 0, self.apriori, self.argument_id)
+        if self.probabilities:
+            self.coverAndRemove = CovererAndRemover_Prob(examples, weight_id, 0, self.apriori, self.argument_id, [p[cl_i] for p in self.probabilities])
+        else:
+            self.coverAndRemove = CovererAndRemover_Prob(examples, weight_id, 0, self.apriori, self.argument_id)
         self.rule_finder.evaluator.probVar = examples.domain.getmeta(self.cover_and_remove.probAttribute)
 
         # compute extreme distributions
@@ -798,7 +893,7 @@ class ABCN2(RuleLearner):
             rule = self.rule_finder.evaluator.bestRule
             self.rule_finder.evaluator.bestRule = None
         if self.postpruning:
-            rule = self.postpruning(rule,examples,weight_id,0, aprior)
+            rule = self.postpruning(rule,examples,weight_id,0, apriori)
         return (rule, True)
     
 
@@ -896,7 +991,7 @@ class ABCN2(RuleLearner):
                 pruned_conditions = self.prune_arg_conditions(ae, allowed_conditions, examples, weight_id)
                 p.baseDist = Orange.statistics.distribution.Distribution(examples.domain.classVar, examples, weight_id)
                 p.filter.conditions = pruned_conditions
-                p.learner.setattr("arg_length", 0)
+                p.learner.setattr("arg_length", len(p.filter.conditions))
 
             else: # prune only unspecified conditions
                 spec_conditions = [c for c in p.filter.conditions if not c.unspecialized_condition]
@@ -1191,7 +1286,7 @@ class CovererAndRemover_AddWeights(CovererAndRemover):
 
 class CovererAndRemover_Prob(CovererAndRemover):
     """ This class impements probabilistic covering. """
-    def __init__(self, examples, weight_id, target_class, apriori, argument_id):
+    def __init__(self, examples, weight_id, target_class, apriori, argument_id, probabilities=None):
         self.best_rule = [None] * len(examples)
         self.prob_attribute = Orange.feature.Descriptor.new_meta_id()
         self.apriori_prob = apriori[target_class] / apriori.abs
@@ -1199,6 +1294,10 @@ class CovererAndRemover_Prob(CovererAndRemover):
         examples.domain.addmeta(self.prob_attribute,
             Orange.feature.Continuous("Probs"))
         self.argument_id = argument_id
+
+        if probabilities and len(probabilities) == len(examples):
+            for pi, p in enumerate(probabilities):
+                examples[pi][self.prob_attribute] = max(p, examples[pi][self.prob_attribute])
 
     def getBestRules(self, current_rules, examples, weight_id):
         best_rules = RuleList()
@@ -1359,6 +1458,19 @@ def perc(l, p):
     l.sort()
     return l[int(math.floor(p * len(l)))]
 
+class FTErr:
+    def __init__(self, median, perc95):
+        self.median = median
+        self.perc95 = perc95
+
+    def __call__(self, mi_beta):
+        mi, beta = mi_beta
+        diff1 = mi - beta * math.log(-math.log(0.95))
+        #diff2 = mi + beta * 0.5772156649
+        diff2 = mi - beta * math.log(-math.log(0.5))
+        return abs(diff1 - self.perc95) + abs(diff2 - self.median)
+
+
 class EVDFitter:
     """ Randomizes a dataset and fits an extreme value distribution onto it. """
 
@@ -1366,8 +1478,6 @@ class EVDFitter:
         self.learner = learner
         self.n = n
         self.randomseed = randomseed
-        # initialize random seed to make experiments repeatable
-        random.seed(self.randomseed)
 
 
     def createRandomDataSet(self, data):
@@ -1392,16 +1502,26 @@ class EVDFitter:
         # compute percentiles
         vals.sort()
         N = len(vals)
-        percs = [avg(vals[int(float(N) * i / 10):int(float(N) * (i + 1) / 10)]) for i in range(10)]
+        median = numpy.median(vals)
+        #print 'median', median
+        percs = [avg(vals[int(float(N)*i/10) : int(float(N)*(i+1)/10)]) for i in range(10)]
         if N < 10:
             return oldMi, oldBeta, percs
         if not fixedBeta:
             beta = min(2.0, math.sqrt(6 * var(vals) / math.pow(math.pi, 2)))#min(2.0, max(oldBeta, math.sqrt(6*var(vals)/math.pow(math.pi,2))))
         else:
             beta = oldBeta
-        mi = max(oldMi, percs[-1] + beta * math.log(-math.log(0.95)))
-        mi = percs[-1] + beta * math.log(-math.log(0.95))
+        
+        errfun = FTErr(median, percs[-1])
+        res = so.minimize(errfun, [oldMi, oldBeta], method = "SLSQP", bounds = [(oldMi, None), (min(oldBeta,1.99), 2.0)])
+        return res.x[0], res.x[1], None
+
+        # old implementations of parameter fitting
+        #mi = max(oldMi, percs[-1] + beta * math.log(-math.log(0.95)))
+        #mi = percs[-1] + beta * math.log(-math.log(0.95))
+        print numpy.average(vals) - beta * 0.5772156649
         return max(oldMi, numpy.average(vals) - beta * 0.5772156649), beta, None
+        #return max(oldMi, mi), beta, None
 
     def prepare_learner(self):
         self.oldStopper = self.learner.ruleFinder.ruleStoppingValidator
@@ -1410,7 +1530,7 @@ class EVDFitter:
         self.validator = self.learner.ruleFinder.validator
         self.ruleFilter = self.learner.ruleFinder.ruleFilter
         self.learner.ruleFinder.validator = None
-        self.learner.ruleFinder.evaluator = Orange.core.RuleEvaluator_LRS()
+        self.learner.ruleFinder.evaluator = Orange.core.RuleEvaluator_LRS_Pot()
         self.learner.ruleFinder.evaluator.storeRules = True
         self.learner.ruleFinder.ruleStoppingValidator = Orange.core.RuleValidator_LRS(alpha=1.0)
         self.learner.ruleFinder.ruleStoppingValidator.max_rule_complexity = 0
@@ -1427,6 +1547,7 @@ class EVDFitter:
 
     def computeEVD(self, data, weightID=0, target_class=0, progress=None):
         import time
+        random.seed(self.randomseed)
         # prepare learned for distribution computation        
         self.prepare_learner()
 
@@ -1444,17 +1565,16 @@ class EVDFitter:
             a = time.time()
             tempData = self.createRandomDataSet(data)
             a = time.time()
-            self.learner.ruleFinder.evaluator.rules = RuleList()
+            #self.learner.ruleFinder.evaluator.rules = RuleList()
+            self.learner.ruleFinder.evaluator.lrss = [0.0] * (self.oldStopper.max_rule_complexity + 2)
             a = time.time()
-            for l in range(self.oldStopper.max_rule_complexity + 2):
-               self.learner.ruleFinder.evaluator.rules.append(None)
-            a = time.time()
+            #for l in range(self.oldStopper.max_rule_complexity + 2):
+            #   self.learner.ruleFinder.evaluator.rules.append(None)
             # Next, learn a rule
             self.learner.ruleFinder(tempData, weightID, target_class, RuleList())
-            a = time.time()
             for l in range(self.oldStopper.max_rule_complexity + 1):
-                if self.learner.ruleFinder.evaluator.rules[l]:
-                    maxVals[l].append(self.learner.ruleFinder.evaluator.rules[l].quality)
+                if self.learner.ruleFinder.evaluator.lrss[l]:
+                    maxVals[l].append(self.learner.ruleFinder.evaluator.lrss[l])
                 else:
                     maxVals[l].append(0)
 ##                qs = [r.quality for r in self.learner.ruleFinder.evaluator.rules if r.complexity == l+1]
@@ -1467,24 +1587,23 @@ class EVDFitter:
 ##                else:
 ##                    maxVals[l].append(0)
             a = time.time()
+        if self.learner.debug:
+            print
 
         # longer rule should always be better than shorter rule 
         for l in range(self.oldStopper.max_rule_complexity):
             for i in range(len(maxVals[l])):
                 if maxVals[l + 1][i] < maxVals[l][i]:
                     maxVals[l + 1][i] = maxVals[l][i]
-##        print
-##        for mi, m in enumerate(maxVals):
-##            print "mi=",mi,m
 
-        mu, beta, perc = 1.0, 2.0, [0.0] * 10
+        mu, beta, perc = 1.0, 1.0, [0.0] * 10
         for mi, m in enumerate(maxVals):
-##            if mi == 0:
-##                mu, beta, perc = self.compParameters(m, mu, beta, perc)
-##            else:
+            if mi == 0:
+                continue
+
             mu, beta, perc = self.compParameters(m, mu, beta, perc, fixedBeta=True)
             extremeDists.append((mu, beta, perc))
-            extremeDists.extend([(0, 1, [])] * (mi))
+            #extremeDists.extend([(0, 1, [])] * (mi))
             if self.learner.debug:
                 print mi, mu, beta, perc
 
@@ -1531,6 +1650,49 @@ class ABBeamFilter(BeamFilter):
             ruleTab[cond.position] = 1
         return map(operator.or_, ruleTab, self.argTab) == self.argTab
 
+class BeamFilterAllExamples(BeamFilter):
+    def __init__(self, width=5):
+        self.width = 5
+
+    def reset(self):
+        self.best_rules = []
+
+    def __call__(self, rulesStar, examples, weight_id):
+        if len(rulesStar) == 0:
+            return RuleList()
+
+        queues = [[] for e in examples]
+        if not self.best_rules:
+            self.best_rules = [None] * len(examples)
+
+        # first, update best rules and add rules to queues
+        for r in rulesStar:
+            for ei, e in enumerate(examples):
+                if e.get_class() == int(r.classifier.defaultVal) and r(e):
+                    queues[ei].append(r)
+                    if r.finQuality > 0 and (self.best_rules[ei] == None or self.best_rules[ei].finQuality < r.finQuality):
+                        self.best_rules[ei] = r
+
+        # sort and prune all queues
+        for qi, q in enumerate(queues):
+            queues[qi] = sorted(queues[qi], key = lambda r: r.quality, reverse=True)
+            queues[qi] = queues[qi][:self.width]
+
+        # select all rules that are best somewhere and have maximum length
+        length = len(rulesStar[-1].filter.conditions)
+
+        rset = set()
+        for q in queues:
+            for r in q:
+                if len(r.filter.conditions) == length:
+                    rset.add(rule_to_string(r))
+        
+        newStar = RuleList()
+        for r in rulesStar:
+            if rule_to_string(r) in rset:
+                newStar.append(r)
+        #print 'star length: ', len(newStar)
+        return newStar
 
 class CoversArguments:
     """

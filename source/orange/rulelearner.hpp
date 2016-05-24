@@ -36,6 +36,7 @@ public:
   PExampleTable examples; //P covered examples
   int weightID; //P weight for the stored examples
   float quality; //P some measure of rule quality
+  float finQuality; //P final rule quality
   int complexity; //P
   float chi; //P 
   float estRF;
@@ -239,6 +240,17 @@ public:
   virtual float operator()(PRule, PExampleTable, const int &, const int &targetClass, PDistribution );
 };
 
+class ORANGE_API TRuleEvaluator_LRS_Pot : public TRuleEvaluator {
+public:
+  __REGISTER_CLASS
+
+  PFloatList lrss; //P
+  bool storeRules; //P
+
+  TRuleEvaluator_LRS_Pot(const bool & = false);
+  virtual float operator()(PRule, PExampleTable, const int &, const int &targetClass, PDistribution );
+};
+
 WRAPPER(RuleFinder)
 class ORANGE_API TRuleFinder : public TOrange {
 public:
@@ -282,6 +294,7 @@ public:
   __REGISTER_CLASS
 
   PDiscretization discretization; //P discretization for continuous attributes
+  bool useContinuous = true; //P set to false if continuous attributes should be skipped 
   
   virtual PRuleList operator()(PRule rule, PExampleTable, const int &weightID, const int &targetClass = -1);
 };
@@ -444,7 +457,6 @@ public:
   virtual PDistribution classDistribution(const TExample &ex) = 0;
 };
 
-// Zakaj moram se enkrat definirati konstruktor;
 class ORANGE_API TRuleClassifier_firstRule : public TRuleClassifier {
 public:
   __REGISTER_CLASS

@@ -325,12 +325,12 @@ bool TRuleValidator_LRS::operator()(PRule rule, PExampleTable, const int &, cons
     return false;
   if (max_rule_complexity > -1.0 && rule->complexity > max_rule_complexity)
     return false;
-  if (min_quality>rule->quality)
-    return false;
+  //if (min_quality>rule->quality)
+  //  return false;
 
   const TDiscDistribution &exp_dist = dynamic_cast<const TDiscDistribution &>(apriori.getReference());
-  if (obs_dist.abs == exp_dist.abs) //it turns out that this happens quite often
-    return false;
+  //if (obs_dist.abs == exp_dist.abs) //it turns out that this happens quite often
+  //  return false;
 
   if (alpha >= 1.0)
     return true;
@@ -461,6 +461,58 @@ float TRuleEvaluator_LRS::operator()(PRule rule, PExampleTable, const int &, con
   return lrs;
 }
 
+TRuleEvaluator_LRS_Pot::TRuleEvaluator_LRS_Pot(const bool &sr)
+: storeRules(sr)
+{
+  TFloatList *l = mlnew TFloatList();
+  lrss = l;
+}
+
+float TRuleEvaluator_LRS_Pot::operator()(PRule rule, PExampleTable, const int &, const int &targetClass, PDistribution apriori)
+{
+  const TDiscDistribution &obs_dist = dynamic_cast<const TDiscDistribution &>(rule->classDistribution.getReference());
+  if (!obs_dist.cases)
+    return 0.0;
+
+  const TDiscDistribution &exp_dist = dynamic_cast<const TDiscDistribution &>(apriori.getReference());
+
+  if (obs_dist.abs >= exp_dist.abs) //it turns out that this happens quite often
+    return 0.0;
+
+  float p = (targetClass < obs_dist.size()) ? obs_dist[targetClass]-0.5 : 1e-5f;
+  float P = (targetClass < exp_dist.size()) && (exp_dist[targetClass] > 0.0) ? exp_dist[targetClass] : 1e-5f;
+
+  float n = obs_dist.abs - p;
+  float N = exp_dist.abs - P;
+
+  // border cases
+  if (N<=1e-5f) return 0.0;
+  if (p<=1e-5f) return 0.0;
+  if (n<=1e-5f) n = 1e-5f;
+
+  if (p<=(p+n)*P/(P+N))
+	return 0.0;
+
+  float ep = (p+n)*P/(P+N);
+  float lrs = 2 * (p*log(p/ep) + n*log(n/(p+n))+(P-p)*log((P-p)/(P+N-p-n))+(N-n)*log((N-n)/(P+N-p-n))-(P-p)*log(P/(P+N))-N*log(N/(P+N)));
+  float N_pot = N + n;
+  float n_pot = 0;
+  float ep_pot = (p+n_pot)*P/(P+N_pot);
+  float lrs_pot = 2 * (p*log(p/ep) + n_pot*log(n_pot/(p+n_pot))+(P-p)*log((P-p)/(P+N_pot-p-n_pot))+(N_pot-n_pot)*log((N_pot-n_pot)/(P+N_pot-p-n_pot))-(P-p)*log(P/(P+N_pot))-N_pot*log(N_pot/(P+N_pot)));
+
+  if (storeRules) {
+	TFilter_values *filter;
+    filter = rule->filter.AS(TFilter_values);
+	int ncond = filter->conditions->size();
+    TFloatList &flist = lrss.getReference();
+    if (flist.at(ncond) < 1e-6 && ncond > 0)
+        flist.at(ncond) = flist.at(ncond-1);
+	if (!flist.at(ncond) || flist.at(ncond) < lrs)
+		flist.at(ncond) = lrs;
+  }
+  return lrs;
+}
+
 
 TEVDist::TEVDist(const float & mu, const float & beta, PFloatList & percentiles)
 : mu(mu),
@@ -516,13 +568,14 @@ TEVDistGetter_Standard::TEVDistGetter_Standard(PEVDistList dists)
 TEVDistGetter_Standard::TEVDistGetter_Standard()
 {}
 
+// parentLength is currently not used
+// have it as a paremeter for future use
 PEVDist TEVDistGetter_Standard::operator()(const PRule, const int & parentLength, const int & length) const
 {
-  // first element (correction for inter - rule optimism
+  // first element (correction for inter - rule optimism)
   if (!length)
     return dists->at(0);
-  // optimism between rule length of "parentLength" and true length "length"
-  int indx = length*(length-1)/2 + parentLength + 1;
+  int indx = length; //length*(length-1)/2 + parentLength + 1;
   if (dists->size() > indx)
     return dists->at(indx);
   return NULL;
@@ -835,10 +888,16 @@ float TRuleEvaluator_mEVC::evaluateRuleM(PRule rule, PExampleTable examples, con
 {
   if (!m & !rule->classDistribution->abs)
     return 0.0;
+  float tmpm;
+  if (m<0) // select m according to Domingos formula
+      tmpm = 1 + (rule->complexity>0)?log(rule->complexity*2*5*examples->domain->attributes->size()):0;
+  else
+      tmpm = m;
+
   rule->chi = getChi(rule->classDistribution->atint(targetClass), rule->classDistribution->abs - rule->classDistribution->atint(targetClass),
                      apriori->atint(targetClass), apriori->abs - apriori->atint(targetClass));
-  float p = rule->classDistribution->atint(targetClass)+m*apriori->atint(targetClass)/apriori->abs;
-  p = p/(rule->classDistribution->abs+m);
+  float p = rule->classDistribution->atint(targetClass)+tmpm*apriori->atint(targetClass)/apriori->abs;
+  p = p/(rule->classDistribution->abs+tmpm);
   return p;
 }
 
@@ -856,12 +915,13 @@ float TRuleEvaluator_mEVC::evaluateRuleEVC(PRule rule, PExampleTable examples, c
   if (!evd || evd->mu < 0.0)
     return -10e+6;
   //printf("mu=%f, beta=%f\n",evd->mu,evd->beta);
+
   if (evd->mu < 1.0001)
   {
     // return as if rule distribution is not optimistic
     rule->chi = getChi(rule->classDistribution->atint(targetClass), rule->classDistribution->abs - rule->classDistribution->atint(targetClass),
                 apriori->atint(targetClass), apriori->abs - apriori->atint(targetClass));
-	rule->estRF = rule->classDistribution->atint(targetClass)/rule->classDistribution->abs;
+    rule->estRF = rule->classDistribution->atint(targetClass)/rule->classDistribution->abs;
     rule->distP = rule->classDistribution->atint(targetClass);
     return (rule->classDistribution->atint(targetClass)+m*aprioriProb)/(rule->classDistribution->abs+m);
   }
@@ -872,18 +932,31 @@ float TRuleEvaluator_mEVC::evaluateRuleEVC(PRule rule, PExampleTable examples, c
   float ePos = 0.0;
   float median = evd->median();
   float rule_acc = rule->classDistribution->atint(targetClass)/rule->classDistribution->abs;
-
   if ((evd->mu-chi)/evd->beta < -500)
     ePos = rule->classDistribution->atint(targetClass);
   if (rule_acc < baseProb)
     ePos = rule->classDistribution->atint(targetClass);
   else if (chi <= median+1e-6)
-      ePos = rule->classDistribution->abs * baseProb;
+    ePos = rule->classDistribution->abs * baseProb;
   else {
       // correct chi
+      /*float oldMu = evd->mu;
+      if (rule->classDistribution->abs == rule->classDistribution->atint(targetClass))
+      {
+          if (rLength - rule->requiredConditions <= 1)
+              evd->mu /= 2;
+          else
+          {
+              PEVDist evd_small = evDistGetter->call(rule, 0, rLength - rule->requiredConditions - 1);
+              evd->mu = (evd_small->mu + evd->mu) / 2; 
+              evd->mu = evd_small->mu; 
+          }
+      }*/
       LNLNChiSq *diffFunc = new LNLNChiSq(evd,chi,aprioriProb);
       rule->chi = brent(0.0,chi,100, diffFunc, 0.1f); // this is only the correction of one step chi
+      //evd->mu = oldMu;
       delete diffFunc;
+
 
       // compute expected number of positive examples relatively to base rule
       if (rule->chi > 0.0)
@@ -895,7 +968,7 @@ float TRuleEvaluator_mEVC::evaluateRuleEVC(PRule rule, PExampleTable examples, c
         ePos = brent(base->atint(targetClass)/base->abs*rule->classDistribution->abs, rule->classDistribution->atint(targetClass), 100, diffFunc, 0.1f);
         //printf("epos = %4.3f\n",ePos);
         delete diffFunc;
-        if (rule->classDistribution->abs == rule->classDistribution->atint(targetClass))
+        /*if (rule->classDistribution->abs == rule->classDistribution->atint(targetClass))
         {
             if (rule->parentRule)
             {
@@ -906,7 +979,7 @@ float TRuleEvaluator_mEVC::evaluateRuleEVC(PRule rule, PExampleTable examples, c
             }
             else
                 ePos = (0.634 * ePos/rule->classDistribution->atint(targetClass) + 0.366) * rule->classDistribution->atint(targetClass);
-        }
+        }*/
       }
       else
         ePos = rule->classDistribution->abs * baseProb;
@@ -946,6 +1019,11 @@ float TRuleEvaluator_mEVC::operator()(PRule rule, PExampleTable examples, const 
   else if (optimismReduction == 2)
     quality = evaluateRuleEVC(rule,examples,weightID,targetClass,apriori,rLength,aprioriProb);
 
+  if (quality < aprioriProb)
+      rule->finQuality = -1;
+  else
+      rule->finQuality = quality;
+  
   if (quality < 0.0)
     return quality;
   if (!probVar || !returnExpectedProb)
@@ -954,17 +1032,58 @@ float TRuleEvaluator_mEVC::operator()(PRule rule, PExampleTable examples, const 
   // get rule's probability coverage
   int improved = 0;
   PEITERATE(ei, rule->examples)
+  {
     if ((*ei).getClass().intV == targetClass && quality > (*ei)[probVar].floatV)
       improved ++;
-
-  // compute future quality = expected quality when rule is finalised
+  }
+    
   float bestQuality;
   float futureQuality = 0.0;
   if (rule->classDistribution->atint(targetClass) == rule->classDistribution->abs)
     futureQuality = -1.0;
   else if (improved >= min_improved &&
-	       improved/rule->classDistribution->atint(targetClass) > min_improved_perc*0.01 &&
-           quality > (aprioriProb + 1e-3))
+	       improved/rule->classDistribution->atint(targetClass) > min_improved_perc) 
+    futureQuality = 1.0 + quality;
+  else {
+    PDistribution oldRuleDist = rule->classDistribution;
+    float rulesTrueChi = rule->chi;
+    float rulesDistP = rule->distP;
+    rule->classDistribution = mlnew TDiscDistribution(examples->domain->classVar);
+    rule->classDistribution->setint(targetClass, oldRuleDist->atint(targetClass));
+    rule->classDistribution->abs = rule->classDistribution->atint(targetClass);
+    rule->complexity += 1;
+
+    float estRF = rule->estRF;
+    if (optimismReduction == 0)
+      bestQuality = evaluateRuleM(rule,examples,weightID,targetClass,apriori,rLength+1,aprioriProb);
+    else if (optimismReduction == 1)
+      bestQuality = evaluateRulePessimistic(rule,examples,weightID,targetClass,apriori,rLength+1,aprioriProb);
+    else if (optimismReduction == 2)
+      bestQuality = evaluateRuleEVC(rule,examples,weightID,targetClass,apriori,rLength+1,aprioriProb);
+
+    rule->estRF = estRF;
+    rule->classDistribution = oldRuleDist;
+    rule->chi = rulesTrueChi;
+    rule->complexity -= 1;
+    rule->distP = rulesDistP;
+
+    if (bestQuality <= quality)
+      futureQuality = -1.0;
+    else if (bestRule && bestQuality <= bestRule->quality)
+      futureQuality = -1.0;
+    else 
+      futureQuality = quality;
+   }
+/*  // compute future quality = expected quality when rule is finalised
+  float bestQuality;
+  float futureQuality = 0.0;
+  float minImproved_base = aprioriProb * (rule->classDistribution->abs - rule->classDistribution->atint(targetClass));
+  if (rule->classDistribution->atint(targetClass) == rule->classDistribution->abs)
+    futureQuality = -1.0;
+  else if (improved >= min_improved &&
+	       improved/rule->classDistribution->atint(targetClass) > min_improved_perc) 
+	  //&&
+          // quality > (oldQuality + 1e-3))
 //    futureQuality = quality;
     futureQuality = 1.0 + quality;
   else {
@@ -1002,11 +1121,6 @@ float TRuleEvaluator_mEVC::operator()(PRule rule, PExampleTable examples, const 
         if (bestQuality <= (*ei)[probVar].floatV) {
           continue;
         }
-      /*  float x = ((*ei)[probVar].floatV-quality); //*rule->classDistribution->abs;
-        if ((*ei)[probVar].floatV > quality) 
-          x *= (1.0-quality)/(bestQuality-quality);
-        x /= sqrt(quality*(1.0-quality)); // rule->classDistribution->abs*
-        futureQuality += log(1.0-max(1e-12,1.0-2*zprob(x))); */
         float x;
         if ((*ei)[probVar].floatV > quality)
         {
@@ -1022,7 +1136,7 @@ float TRuleEvaluator_mEVC::operator()(PRule rule, PExampleTable examples, const 
       futureQuality /= rule->classDistribution->atint(targetClass);
     }
   }
-
+  */
   bool attsig = true;
   if (attributeAlpha < 1.0)
   {
@@ -1030,15 +1144,16 @@ float TRuleEvaluator_mEVC::operator()(PRule rule, PExampleTable examples, const 
   }
   if (!attsig)
       futureQuality = -1;
+  
 
- 
   // store best rule as best rule and return expected quality of this rule
+  //printf("olderror: %4.4f, newerror: %4.4f, improved: %d\n", oldError, ruleError, improved);
   rule->quality = quality;
+  validator->call(rule, examples, weightID, targetClass, apriori);
   if (improved >= min_improved &&
-      improved/rule->classDistribution->atint(targetClass) > min_improved_perc*0.01 &&
-      quality > (aprioriProb + 1e-3) &&
+      improved/rule->classDistribution->atint(targetClass) > min_improved_perc &&
       (!bestRule || (quality>bestRule->quality+1e-3)) &&
-      (!validator || validator->call(rule, examples, weightID, targetClass, apriori))) {
+      (!validator || rule->requiredConditions == rLength || validator->call(rule, examples, weightID, targetClass, apriori))) {
 
       TRule *pbestRule = new TRule(rule.getReference(), true);
       PRule wpbestRule = pbestRule;
@@ -1053,7 +1168,7 @@ float TRuleEvaluator_mEVC::operator()(PRule rule, PExampleTable examples, const 
       {
         bestRule = wpbestRule;
         bestRule->quality = quality;
-        futureQuality += 1.0;
+        //futureQuality += 1.0;
       }
   }
   return futureQuality;
@@ -1223,7 +1338,7 @@ PRuleList TRuleBeamRefiner_Selector::operator()(PRule wrule, PExampleTable data,
       }
     }
 
-    else if (((*vi)->varType == TValue::FLOATVAR)) {
+    else if (((*vi)->varType == TValue::FLOATVAR) && useContinuous) {
 
         if (discretization) {
         PVariable discretized;
@@ -1366,12 +1481,12 @@ PRule TRuleBeamFinder::operator()(PExampleTable data, const int &weightID, const
         if ((*ni)->quality > bestRule->quality && (!validator || validator->call(*ni, data, weightID, targetClass, apriori)))
           _selectBestRule(*ni, bestRule, wins, rgen);
         // if rule covers only one class or has less than 2 examples, do not add it for further specialization
-        if (entropy_evaluator->call(*ni, data, weightID, targetClass, apriori) > -0.01 ||
-            (*ni)->classDistribution->abs < 2)
-            continue;
+        //if (entropy_evaluator->call(*ni, data, weightID, targetClass, apriori) > -0.01 ||
+        //    (*ni)->classDistribution->abs < 2)
+        //    continue;
         // is the rule a good candidate for further specialization?
         if (!ruleStoppingValidator || ruleStoppingValidator->call(*ni, (*ri)->examples, weightID, targetClass, (*ri)->classDistribution)) {
-          ruleList->push_back(*ni);
+            ruleList->push_back(*ni);
         }
       }
     }

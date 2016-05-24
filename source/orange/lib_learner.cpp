@@ -1688,6 +1688,7 @@ C_NAMED(RuleValidator_LRS - Orange.classification.rules.Validator_LRS, RuleValid
 C_NAMED(RuleEvaluator_Entropy - Orange.classification.rules.Evaluator_Entropy, RuleEvaluator, "()")
 C_NAMED(RuleEvaluator_Laplace - Orange.classification.rules.Evaluator_Laplace, RuleEvaluator, "()")
 C_NAMED(RuleEvaluator_LRS - Orange.classification.rules.Evaluator_LRS, RuleEvaluator, "()")
+C_NAMED(RuleEvaluator_LRS_Pot - Orange.classification.rules.Evaluator_LRS_Pot, RuleEvaluator, "()")
 C_NAMED(RuleEvaluator_mEVC - Orange.classification.rules.Evaluator_mEVC, RuleEvaluator, "(ruleAlpha=1.0,attributeAlpha=1.0)")
 
 C_NAMED(EVDist, Orange, "()")
