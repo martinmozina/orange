@@ -932,6 +932,7 @@ float TRuleEvaluator_mEVC::evaluateRuleEVC(PRule rule, PExampleTable examples, c
   float ePos = 0.0;
   float median = evd->median();
   float rule_acc = rule->classDistribution->atint(targetClass)/rule->classDistribution->abs;
+
   if ((evd->mu-chi)/evd->beta < -500)
     ePos = rule->classDistribution->atint(targetClass);
   if (rule_acc < baseProb)
@@ -1003,6 +1004,7 @@ float TRuleEvaluator_mEVC::evaluateRuleEVC(PRule rule, PExampleTable examples, c
 
 float TRuleEvaluator_mEVC::operator()(PRule rule, PExampleTable examples, const int & weightID, const int &targetClass, PDistribution apriori)
 {
+  rule->finQuality = -1;
   rule->chi = 0.0;
   if (!rule->classDistribution->abs || !rule->classDistribution->atint(targetClass))
     return 0;
@@ -1019,16 +1021,26 @@ float TRuleEvaluator_mEVC::operator()(PRule rule, PExampleTable examples, const 
   else if (optimismReduction == 2)
     quality = evaluateRuleEVC(rule,examples,weightID,targetClass,apriori,rLength,aprioriProb);
 
-  if (quality < aprioriProb)
-      rule->finQuality = -1;
-  else
-      rule->finQuality = quality;
-  
-  if (quality < 0.0)
+  if (quality > aprioriProb &&
+      (!validator || validator->call(rule, examples, weightID, targetClass, apriori))) {
+      bool ruleGoodEnough = true;
+
+      if (ruleAlpha < 1.0)
+        ruleGoodEnough = ruleGoodEnough & ((rule->chi > 0.0) && (chisqprob(rule->chi, 1.0f) <= ruleAlpha));
+      if (ruleGoodEnough && attributeAlpha < 1.0)
+        ruleGoodEnough = ruleGoodEnough & ruleAttSignificant(rule, examples, weightID, targetClass, apriori, aprioriProb);
+
+      if (ruleGoodEnough)
+          rule->finQuality = quality;
+  }
+  return quality;
+
+  /*if (quality < 0.0)
     return quality;
   if (!probVar || !returnExpectedProb)
     return quality;
-
+*/
+  /*
   // get rule's probability coverage
   int improved = 0;
   PEITERATE(ei, rule->examples)
@@ -1067,14 +1079,14 @@ float TRuleEvaluator_mEVC::operator()(PRule rule, PExampleTable examples, const 
     rule->complexity -= 1;
     rule->distP = rulesDistP;
 
-    if (bestQuality <= quality)
+     if (bestQuality <= quality)
       futureQuality = -1.0;
     else if (bestRule && bestQuality <= bestRule->quality)
       futureQuality = -1.0;
     else 
       futureQuality = quality;
-   }
-/*  // compute future quality = expected quality when rule is finalised
+   }*/
+  /*// compute future quality = expected quality when rule is finalised
   float bestQuality;
   float futureQuality = 0.0;
   float minImproved_base = aprioriProb * (rule->classDistribution->abs - rule->classDistribution->atint(targetClass));
@@ -1135,8 +1147,8 @@ float TRuleEvaluator_mEVC::operator()(PRule rule, PExampleTable examples, const 
 //      futureQuality = 1.0 - exp(futureQuality);
       futureQuality /= rule->classDistribution->atint(targetClass);
     }
-  }
-  */
+  }*/
+  /*
   bool attsig = true;
   if (attributeAlpha < 1.0)
   {
@@ -1145,15 +1157,13 @@ float TRuleEvaluator_mEVC::operator()(PRule rule, PExampleTable examples, const 
   if (!attsig)
       futureQuality = -1;
   
-
   // store best rule as best rule and return expected quality of this rule
   //printf("olderror: %4.4f, newerror: %4.4f, improved: %d\n", oldError, ruleError, improved);
   rule->quality = quality;
-  validator->call(rule, examples, weightID, targetClass, apriori);
   if (improved >= min_improved &&
       improved/rule->classDistribution->atint(targetClass) > min_improved_perc &&
       (!bestRule || (quality>bestRule->quality+1e-3)) &&
-      (!validator || rule->requiredConditions == rLength || validator->call(rule, examples, weightID, targetClass, apriori))) {
+      (!validator || validator->call(rule, examples, weightID, targetClass, apriori))) {
 
       TRule *pbestRule = new TRule(rule.getReference(), true);
       PRule wpbestRule = pbestRule;
@@ -1166,12 +1176,13 @@ float TRuleEvaluator_mEVC::operator()(PRule rule, PExampleTable examples, const 
         ruleGoodEnough = ruleGoodEnough & ruleAttSignificant(rule, examples, weightID, targetClass, apriori, aprioriProb);
       if (ruleGoodEnough)
       {
+        printf("selecting rule ... \n");
         bestRule = wpbestRule;
         bestRule->quality = quality;
         //futureQuality += 1.0;
       }
   }
-  return futureQuality;
+  return futureQuality;*/
 }
 
 bool worstRule(const PRule &r1, const PRule &r2)

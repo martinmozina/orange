@@ -2,10 +2,12 @@ import random
 import math
 import operator
 import numpy
+import time
 import scipy.optimize as so
 
 import Orange
 import Orange.core
+
 
 RuleClassifier = Orange.core.RuleClassifier
 RuleClassifier_firstRule = Orange.core.RuleClassifier_firstRule
@@ -522,6 +524,205 @@ class CN2SDUnorderedLearner(CN2UnorderedLearner):
             r.filterAndStore(oldInstances, weight, r.classifier.default_val)
         return classifier
 
+import heapq
+from collections import Counter
+class ABCN2Star(RuleLearner):
+    def __init__(self, argument_id=0, width=500, m=2, opt_reduction=2, nsampling=300, max_rule_complexity=5,
+                 rule_sig=1.0, att_sig=1.0, postpruning=None, min_quality=0., min_coverage=1, learn_for_class=None,
+                 min_cl_sig=0.5, min_beta=0.0, set_prefix_rules=False, add_sub_rules=False, debug=False, **kwds):
+
+        # argument ID which is passed to abcn2 learner
+        self.argument_id = argument_id
+        # learn for specific class only?
+        self.learn_for_class = learn_for_class
+        self.postpruning = postpruning
+
+        evdGet = Orange.core.EVDistGetter_Standard()
+        self.evaluator = Evaluator_mEVC(m=m, evDistGetter=evdGet, min_improved=0, min_improved_perc=0)
+        self.evaluator.optimismReduction = opt_reduction
+        self.evaluator.ruleAlpha = rule_sig
+        self.evaluator.attributeAlpha = att_sig
+        self.evaluator.validator = Validator_LRS(alpha=1.0, min_quality=min_quality, min_coverage=min_coverage, max_rule_complexity=max_rule_complexity)
+        self.validator = Validator_LRS(alpha=1.0, min_quality=min_quality, min_coverage=min_coverage, max_rule_complexity=max_rule_complexity)
+
+        # rule finder
+        self.rule_finder = BeamFinder()
+        #self.ruleFilter = BeamFilter_Width(width=width)
+        self.ruleFilter = BeamFilterAllExamples(width=width)
+        self.ruleFilter_arguments = ABBeamFilter(width=width)
+        if max_rule_complexity - 1 < 0:
+            max_rule_complexity = 10
+        self.rule_finder.rule_stoppingValidator = Validator_LRS(alpha=1.0, min_quality=-100.,
+                                                                max_rule_complexity=max_rule_complexity,
+                                                                min_coverage=min_coverage)
+        self.refiner = BeamRefiner_Selector()
+        self.refiner_arguments = SelectorAdder(discretizer=Orange.feature.discretization.Entropy(forceAttribute=1,
+                                                                                           maxNumberOfIntervals=2))
+
+        self.evd_creator = EVDFitter(self, n=nsampling)
+        # classifier
+        self.add_sub_rules = add_sub_rules
+        self.classifier = PILAR(alternative_learner=None, min_cl_sig=min_cl_sig, min_beta=min_beta, set_prefix_rules=set_prefix_rules)
+        self.debug = debug
+
+        self.initializer = BeamInitializer_Default()
+        self.width = width
+
+        # arbitrary parameters
+        self.__dict__.update(kwds)
+
+
+    def __call__(self, examples, weight_id=0):
+        # we begin with an empty set of rules
+        all_rules = RuleList()
+        # th en, iterate through all classes and learn rule for each class separately
+        for cl_i, cl in enumerate(examples.domain.class_var):
+            if self.learn_for_class != None and not self.learn_for_class in [cl, cl_i]:
+                continue
+
+            # create dichotomous class
+            dich_data = self.create_dich_class(examples, cl)
+
+            if self.evaluator.optimismReduction > 0:
+                self.evaluator.evDistGetter.dists = self.evd_creator.computeEVD(dich_data, weight_id, target_class=0, progress=None)
+            # apriori distribution
+            apriori = Orange.statistics.distribution.Distribution(
+                                dich_data.domain.class_var, dich_data, weight_id)
+            prior_prob = apriori[0] / apriori.abs
+
+            star, _ = self.initializer(dich_data, weight_id, 0, RuleList(), self.evaluator, apriori)
+
+            # best rules for this class
+            best_rules = [None] * len(dich_data)
+            while star:
+                # create queues, one for each example
+                queues = [[] for d in dich_data]
+                # specialize each rule in star and push them to queues
+                for r in star:
+                    new_rules = self.refiner(r, dich_data, weight_id, 0)
+                    for nr in new_rules:
+                        if self.validator(nr, dich_data, weight_id, 0, apriori):
+                            nr.quality = self.evaluator(nr, dich_data, weight_id, 0, apriori)
+                            for e in nr.examples:
+                                pos = int(e["PositionIndex"])
+                                heapq.heappush(queues[pos], (-nr.quality, nr))
+                                if nr.finQuality > prior_prob and \
+                                   (best_rules[pos] == None or best_rules[pos].finQuality < nr.finQuality):
+                                       best_rules[pos] = nr
+
+                # create new star from queues
+                new_star_set = set()
+                while len(new_star_set) < self.width:
+                    # pop one rule from each queue and put into a temporary counter
+                    cnt = Counter()
+                    for q in queues:
+                        if not q:
+                            continue
+                        r = heapq.heappop(q)
+                        cnt[r[1]] += 1
+                    if not cnt:
+                        break
+                    elts = cnt.most_common()
+                    for e, counts in elts:
+                        if e in new_star_set: continue
+                        new_star_set.add(e)
+                        if len(new_star_set) >= self.width:
+                            break
+                star = RuleList()
+                for nr in new_star_set:
+                    star.append(nr)
+                
+            # create a list of rules
+            rules = RuleList()
+            rset = set()
+            for r in best_rules:
+                if r and r not in rset:
+                    rset.add(r)
+                    rules.append(r)
+
+            if self.add_sub_rules:
+                rules = self.add_sub_rules_call(rules, dich_data, weight_id)
+
+            # restore domain and class in rules, add them to all_rules
+            for r in rules:
+                all_rules.append(self.change_domain(r, cl, examples, weight_id))
+
+        # create a classifier from all rules
+        return self.create_classifier(all_rules, examples, weight_id)
+
+    def create_dich_class(self, examples, cl):
+        """
+        Create dichotomous class.
+        """
+        (newDomain, targetVal) = create_dichotomous_class(examples.domain, examples.domain.class_var, str(cl), negate=0)
+        newDomainmetas = newDomain.getmetas()
+        newDomain.addmeta(Orange.feature.Descriptor.new_meta_id(), examples.domain.class_var) # old class as meta
+        if not newDomain.hasmeta("PositionIndex"):
+            newId = Orange.core.newmetaid()
+            newDomain.addmeta(newId, Orange.core.FloatVariable("PositionIndex"))
+        dichData = examples.select(newDomain)
+        if self.argument_id:
+            for d in dichData: # remove arguments given to other classes
+                if not d.getclass() == targetVal:
+                    d[self.argument_id] = "?"
+        for i in range(len(dichData)):
+            dichData[i]["PositionIndex"] = float(i)
+        return dichData
+
+    def change_domain(self, rule, cl, examples, weight_id):
+        rule.filter = Orange.data.filter.Values(
+            domain=examples.domain, conditions=rule.filter.conditions)
+        rule.filterAndStore(examples, weight_id, cl)
+        if hasattr(rule, "learner") and hasattr(rule.learner, "arg_example"):
+            rule.learner.arg_example = Orange.data.Instance(examples.domain, rule.learner.arg_example)
+        return rule
+
+    def create_classifier(self, rules, examples, weight_id):
+        return self.classifier(rules, examples, weight_id)
+
+    def add_sub_rules_call(self, rules, examples, weight_id):
+        apriori = Orange.statistics.distribution.Distribution(
+                            examples.domain.class_var, examples, weight_id)
+        new_rules = RuleList()
+        for r in rules:
+            new_rules.append(r)
+
+        # loop through rules
+        for r in rules:
+            tmpList = RuleList()
+            tmpRle = r.clone()
+            tmpRle.filter.conditions = r.filter.conditions[:r.requiredConditions] # do not split argument
+            tmpRle.parentRule = None
+            tmpRle.filterAndStore(examples, weight_id, r.classifier.default_val)
+            tmpRle.complexity = 0
+            tmpList.append(tmpRle)
+            while tmpList and len(tmpList[0].filter.conditions) <= len(r.filter.conditions):
+                tmpList2 = RuleList()
+                for tmpRule in tmpList:
+                    # evaluate tmpRule
+                    oldREP = self.rule_finder.evaluator.returnExpectedProb
+                    self.rule_finder.evaluator.returnExpectedProb = False
+                    tmpRule.quality = self.rule_finder.evaluator(tmpRule, examples, weight_id, r.classifier.default_val, apriori)
+                    self.rule_finder.evaluator.returnExpectedProb = oldREP
+                tmpList.sort(lambda x, y:-cmp(x.quality, y.quality))
+                tmpList = tmpList[:self.ruleFilter.width]
+
+                for tmpRule in tmpList:
+                    # if rule not in rules already, add it to the list
+                    if not True in [Orange.classification.rules.rules_equal(ri, tmpRule) for ri in new_rules] and len(tmpRule.filter.conditions) > 0 and tmpRule.quality > apriori[r.classifier.default_val] / apriori.abs:
+                        new_rules.append(tmpRule)
+                    # create new tmpRules, set parent Rule, append them to tmpList2
+                    if not True in [Orange.classification.rules.rules_equal(ri, tmpRule) for ri in new_rules]:
+                        for c in r.filter.conditions:
+                            tmpRule2 = tmpRule.clone()
+                            tmpRule2.parentRule = tmpRule
+                            tmpRule2.filter.conditions.append(c)
+                            tmpRule2.filterAndStore(examples, weight_id, r.classifier.default_val)
+                            tmpRule2.complexity += 1
+                            if tmpRule2.class_distribution.abs < tmpRule.class_distribution.abs:
+                                tmpList2.append(tmpRule2)
+                tmpList = tmpList2
+        return new_rules
 
 @deprecated_members(
     {"beamWidth": "beam_width",
@@ -599,7 +800,7 @@ class ABCN2(RuleLearner):
 
     """
 
-    def __init__(self, argument_id=0, width=5, m=2, max_rules=-1, opt_reduction=2, nsampling=100, max_rule_complexity=5,
+    def __init__(self, argument_id=0, width=5, m=2, max_rules=-1, opt_reduction=2, nsampling=300, max_rule_complexity=5,
                  rule_sig=1.0, att_sig=1.0, postpruning=None, min_quality=0., min_coverage=1, min_improved=1, min_improved_perc=0.0,
                  learn_for_class=None, learn_one_rule=False, evd=None, evd_arguments=None, prune_arguments=False, analyse_argument= -1,
                  alternative_learner=None, min_cl_sig=0.5, min_beta=0.0, set_prefix_rules=False, add_sub_rules=False, debug=False,
@@ -746,7 +947,6 @@ class ABCN2(RuleLearner):
                             r.quality = r.finQuality
                             rset.add(str_rule)
                             rules.append(r)
-                    #print "rules", len(rules)
                     break
 
                     if not rule:
@@ -755,6 +955,7 @@ class ABCN2(RuleLearner):
                         if good_rule:
                             print "rule learned: ", rule_to_string(rule), rule.quality
                         else:
+                            break
                             print "rule only to influence learning: ", rule_to_string(rule), rule.quality
                             
                     dich_data = self.remove_covered_examples(rule, dich_data, weight_id, good_rule)
@@ -814,9 +1015,9 @@ class ABCN2(RuleLearner):
 
         # prepare covering mechanism
         if self.probabilities:
-            self.coverAndRemove = CovererAndRemover_Prob(examples, weight_id, 0, self.apriori, self.argument_id, [p[cl_i] for p in self.probabilities])
+            self.cover_and_remove = CovererAndRemover_Prob(examples, weight_id, 0, self.apriori, self.argument_id, [p[cl_i] for p in self.probabilities])
         else:
-            self.coverAndRemove = CovererAndRemover_Prob(examples, weight_id, 0, self.apriori, self.argument_id)
+            self.cover_and_remove = CovererAndRemover_Prob(examples, weight_id, 0, self.apriori, self.argument_id)
         self.rule_finder.evaluator.probVar = examples.domain.getmeta(self.cover_and_remove.probAttribute)
 
         # compute extreme distributions
@@ -845,11 +1046,16 @@ class ABCN2(RuleLearner):
         (newDomain, targetVal) = create_dichotomous_class(examples.domain, examples.domain.class_var, str(cl), negate=0)
         newDomainmetas = newDomain.getmetas()
         newDomain.addmeta(Orange.feature.Descriptor.new_meta_id(), examples.domain.class_var) # old class as meta
+        if not newDomain.hasmeta("PositionIndex"):
+            newId = Orange.core.newmetaid()
+            newDomain.addmeta(newId, Orange.core.FloatVariable("PositionIndex"))
         dichData = examples.select(newDomain)
         if self.argument_id:
             for d in dichData: # remove arguments given to other classes
                 if not d.getclass() == targetVal:
                     d[self.argument_id] = "?"
+        for i in range(len(dichData)):
+            dichData[i]["PositionIndex"] = float(i)
         return dichData
 
     def get_argumented_examples(self, examples):
@@ -1474,7 +1680,7 @@ class FTErr:
 class EVDFitter:
     """ Randomizes a dataset and fits an extreme value distribution onto it. """
 
-    def __init__(self, learner, n=200, randomseed=100):
+    def __init__(self, learner, n=300, randomseed=100):
         self.learner = learner
         self.n = n
         self.randomseed = randomseed
@@ -1513,7 +1719,7 @@ class EVDFitter:
             beta = oldBeta
         
         errfun = FTErr(median, percs[-1])
-        res = so.minimize(errfun, [oldMi, oldBeta], method = "SLSQP", bounds = [(oldMi, None), (min(oldBeta,1.99), 2.0)])
+        res = so.minimize(errfun, [oldMi, oldBeta], method = "SLSQP", bounds = [(oldMi, None), (oldBeta, None)])
         return res.x[0], res.x[1], None
 
         # old implementations of parameter fitting
@@ -1600,13 +1806,17 @@ class EVDFitter:
         for mi, m in enumerate(maxVals):
             if mi == 0:
                 continue
-
             mu, beta, perc = self.compParameters(m, mu, beta, perc, fixedBeta=True)
             extremeDists.append((mu, beta, perc))
             #extremeDists.extend([(0, 1, [])] * (mi))
             if self.learner.debug:
                 print mi, mu, beta, perc
 
+        # pickle extremeDistribution
+        import cPickle
+        with open("dists.pickle", "wb") as f:
+            cPickle.dump((extremeDists, maxVals), f)
+            
         self.restore_learner()
         return self.createEVDistList(extremeDists)
 
@@ -1651,8 +1861,8 @@ class ABBeamFilter(BeamFilter):
         return map(operator.or_, ruleTab, self.argTab) == self.argTab
 
 class BeamFilterAllExamples(BeamFilter):
-    def __init__(self, width=5):
-        self.width = 5
+    def __init__(self, width=500):
+        self.width = 500
 
     def reset(self):
         self.best_rules = []
@@ -1661,37 +1871,45 @@ class BeamFilterAllExamples(BeamFilter):
         if len(rulesStar) == 0:
             return RuleList()
 
+        a = time.time()
+
         queues = [[] for e in examples]
         if not self.best_rules:
             self.best_rules = [None] * len(examples)
 
         # first, update best rules and add rules to queues
         for r in rulesStar:
-            for ei, e in enumerate(examples):
-                if e.get_class() == int(r.classifier.defaultVal) and r(e):
-                    queues[ei].append(r)
-                    if r.finQuality > 0 and (self.best_rules[ei] == None or self.best_rules[ei].finQuality < r.finQuality):
-                        self.best_rules[ei] = r
+            for e in r.examples:
+                position = int(e["PositionIndex"])
+                queues[position].append(r)
+                if r.finQuality > 0 and (self.best_rules[position] == None or \
+                        self.best_rules[position].finQuality < r.finQuality):
+                    self.best_rules[position] = r
 
         # sort and prune all queues
         for qi, q in enumerate(queues):
             queues[qi] = sorted(queues[qi], key = lambda r: r.quality, reverse=True)
-            queues[qi] = queues[qi][:self.width]
 
         # select all rules that are best somewhere and have maximum length
         length = len(rulesStar[-1].filter.conditions)
 
         rset = set()
-        for q in queues:
-            for r in q:
+        for pos in range(10):
+            for q in queues:
+                if pos >= len(q):
+                    continue
+                r = q[pos]
                 if len(r.filter.conditions) == length:
-                    rset.add(rule_to_string(r))
+                    #rset.add(rule_to_string(r))
+                    rset.add(r)
+            if len(rset) > self.width:
+                break
         
         newStar = RuleList()
         for r in rulesStar:
-            if rule_to_string(r) in rset:
+            if r in rset: #rule_to_string(r) in rset:
                 newStar.append(r)
-        #print 'star length: ', len(newStar)
+        print 'star length: ', len(newStar), "took time: ", time.time() - a
         return newStar
 
 class CoversArguments:
