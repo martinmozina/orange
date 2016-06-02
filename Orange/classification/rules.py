@@ -573,6 +573,7 @@ class ABCN2Star(RuleLearner):
 
 
     def __call__(self, examples, weight_id=0):
+        print "Examples len: ", len(examples)
         # we begin with an empty set of rules
         all_rules = RuleList()
         # th en, iterate through all classes and learn rule for each class separately
@@ -639,6 +640,10 @@ class ABCN2Star(RuleLearner):
                 if r and r not in rset:
                     rset.add(r)
                     rules.append(r)
+            #print "Learned rules:"
+            #for r in rules:
+            #    print rule_to_string(r), r.quality
+            #print "Finished"
 
             if self.add_sub_rules:
                 rules = self.add_sub_rules_call(rules, dich_data, weight_id)
@@ -700,10 +705,10 @@ class ABCN2Star(RuleLearner):
                 tmpList2 = RuleList()
                 for tmpRule in tmpList:
                     # evaluate tmpRule
-                    oldREP = self.rule_finder.evaluator.returnExpectedProb
-                    self.rule_finder.evaluator.returnExpectedProb = False
-                    tmpRule.quality = self.rule_finder.evaluator(tmpRule, examples, weight_id, r.classifier.default_val, apriori)
-                    self.rule_finder.evaluator.returnExpectedProb = oldREP
+                    #oldREP = self.rule_finder.evaluator.returnExpectedProb
+                    #self.rule_finder.evaluator.returnExpectedProb = False
+                    tmpRule.quality = self.evaluator(tmpRule, examples, weight_id, r.classifier.default_val, apriori)
+                    #self.rule_finder.evaluator.returnExpectedProb = oldREP
                 tmpList.sort(lambda x, y:-cmp(x.quality, y.quality))
                 tmpList = tmpList[:self.ruleFilter.width]
 
@@ -1711,6 +1716,7 @@ class EVDFitter:
         median = numpy.median(vals)
         #print 'median', median
         percs = [avg(vals[int(float(N)*i/10) : int(float(N)*(i+1)/10)]) for i in range(10)]
+        percs = vals[int(float(N)*95.0/100.0)]
         if N < 10:
             return oldMi, oldBeta, percs
         if not fixedBeta:
@@ -1718,7 +1724,7 @@ class EVDFitter:
         else:
             beta = oldBeta
         
-        errfun = FTErr(median, percs[-1])
+        errfun = FTErr(median, percs)
         res = so.minimize(errfun, [oldMi, oldBeta], method = "SLSQP", bounds = [(oldMi, None), (oldBeta, None)])
         return res.x[0], res.x[1], None
 
@@ -1728,6 +1734,16 @@ class EVDFitter:
         print numpy.average(vals) - beta * 0.5772156649
         return max(oldMi, numpy.average(vals) - beta * 0.5772156649), beta, None
         #return max(oldMi, mi), beta, None
+
+    def get_ninety(self, maxVals):
+        nines = []
+        for mv in maxVals:
+            mv.sort()
+            N = len(mv)
+            percs = mv[int(float(N)*95.0/100.0)]
+            #percs = [avg(mv[int(float(N)*i/10) : int(float(N)*(i+1)/10)]) for i in range(10)][-1]
+            nines.append(percs)
+        return nines
 
     def prepare_learner(self):
         self.oldStopper = self.learner.ruleFinder.ruleStoppingValidator
@@ -1761,7 +1777,8 @@ class EVDFitter:
         extremeDists = [(0, 1, [])]
         self.learner.ruleFinder.ruleStoppingValidator.max_rule_complexity = self.oldStopper.max_rule_complexity
         maxVals = [[] for l in range(self.oldStopper.max_rule_complexity + 1)]
-        for d_i in range(self.n):
+        old_ninety = None
+        for d_i in range(self.n*100):
             if not progress:
                 if self.learner.debug:
                     print d_i,
@@ -1783,6 +1800,8 @@ class EVDFitter:
                     maxVals[l].append(self.learner.ruleFinder.evaluator.lrss[l])
                 else:
                     maxVals[l].append(0)
+                if l > 1:
+                    maxVals[l][-1] = max(maxVals[l][-1], maxVals[l-1][-1])
 ##                qs = [r.quality for r in self.learner.ruleFinder.evaluator.rules if r.complexity == l+1]
 ####                if qs:
 ####                    for r in self.learner.ruleFinder.evaluator.rules:
@@ -1793,14 +1812,25 @@ class EVDFitter:
 ##                else:
 ##                    maxVals[l].append(0)
             a = time.time()
+            if d_i > 0 and d_i % 100 == 0:
+                new_ninety = self.get_ninety(maxVals)
+                if old_ninety:
+                    finish = True
+                    for v1, v2 in zip(old_ninety, new_ninety):
+                        print v1, v2, abs(v1-v2), len(maxVals[1]), len(maxVals[1])
+                        if abs(v1-v2) > 0.5:
+                            finish = False
+                    if finish:
+                        break
+                old_ninety = new_ninety
         if self.learner.debug:
             print
 
         # longer rule should always be better than shorter rule 
-        for l in range(self.oldStopper.max_rule_complexity):
-            for i in range(len(maxVals[l])):
-                if maxVals[l + 1][i] < maxVals[l][i]:
-                    maxVals[l + 1][i] = maxVals[l][i]
+        #for l in range(self.oldStopper.max_rule_complexity):
+        #    for i in range(len(maxVals[l])):
+        #        if maxVals[l + 1][i] < maxVals[l][i]:
+        #            maxVals[l + 1][i] = maxVals[l][i]
 
         mu, beta, perc = 1.0, 1.0, [0.0] * 10
         for mi, m in enumerate(maxVals):
