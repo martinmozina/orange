@@ -675,7 +675,6 @@ float brent(const float & minv, const float & maxv, const int & maxsteps, DiffFu
   float fa = func->call(a);
   float fb = func->call(b);
 
-
  // float threshold = 0.01 * (maxv - minv);
   if (fb>0 && fa>0 && fb>fa || fb<0 && fa<0 && fb<fa)
     return a;
@@ -914,7 +913,6 @@ float TRuleEvaluator_mEVC::evaluateRuleEVC(PRule rule, PExampleTable examples, c
 
   if (!evd || evd->mu < 0.0)
     return -10e+6;
-  //printf("mu=%f, beta=%f\n",evd->mu,evd->beta);
 
   if (evd->mu < 1.0001)
   {
@@ -967,7 +965,6 @@ float TRuleEvaluator_mEVC::evaluateRuleEVC(PRule rule, PExampleTable examples, c
         float baseTarget = base->atint(targetClass);
         LRInv *diffFunc = new LRInv(rule->classDistribution->abs, baseTarget, base->abs, rule->chi); //-0.45);
         ePos = brent(base->atint(targetClass)/base->abs*rule->classDistribution->abs, rule->classDistribution->atint(targetClass), 100, diffFunc, 0.1f);
-        //printf("epos = %4.3f\n",ePos);
         delete diffFunc;
         /*if (rule->classDistribution->abs == rule->classDistribution->atint(targetClass))
         {
@@ -994,7 +991,6 @@ float TRuleEvaluator_mEVC::evaluateRuleEVC(PRule rule, PExampleTable examples, c
   rule->estRF = ePos/rule->classDistribution->abs;
 
   float quality = (ePos + m*aprioriProb)/(rule->classDistribution->abs+m);
-
   if (quality > aprioriProb)
     return quality;
   if (rule_acc < aprioriProb)
