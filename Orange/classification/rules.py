@@ -639,6 +639,7 @@ class ABCN2Star(RuleLearner):
                 if r and r not in rset:
                     rset.add(r)
                     rules.append(r)
+                    #print rule_to_string(r), r.quality, r.classDistribution[int(r.classifier.defaultVal)]/r.classDistribution.abs
             #print "Learned rules:"
             #for r in rules:
             #    print rule_to_string(r), r.quality
@@ -1724,7 +1725,8 @@ class EVDFitter:
             beta = oldBeta
         
         errfun = FTErr(median, percs)
-        res = so.minimize(errfun, [oldMi, oldBeta], method = "SLSQP", bounds = [(oldMi, None), (oldBeta, None)])
+        #res = so.minimize(errfun, [oldMi, oldBeta], method = "SLSQP", bounds = [(oldMi, None), (oldBeta, None)])
+        res = so.minimize(errfun, [oldMi, oldBeta], method = "SLSQP", bounds = [(oldMi, None), (2, 2)])
         return res.x[0], res.x[1], None
 
         # old implementations of parameter fitting
@@ -1798,7 +1800,8 @@ class EVDFitter:
                     maxVals[l].append(self.learner.ruleFinder.evaluator.lrss[l])
                 else:
                     maxVals[l].append(0)
-                if l > 1:
+                if l > 1 and maxVals[l-1][-1] > maxVals[l][-1]:
+                    #maxVals[l][-1] = 0
                     maxVals[l][-1] = max(maxVals[l][-1], maxVals[l-1][-1])
 ##                qs = [r.quality for r in self.learner.ruleFinder.evaluator.rules if r.complexity == l+1]
 ####                if qs:
@@ -1829,10 +1832,11 @@ class EVDFitter:
         #        if maxVals[l + 1][i] < maxVals[l][i]:
         #            maxVals[l + 1][i] = maxVals[l][i]
 
-        mu, beta, perc = 1.0, 1.0, [0.0] * 10
+        mu, beta, perc = 1.1, 2.0, [0.0] * 10
         for mi, m in enumerate(maxVals):
             if mi == 0:
                 continue
+            m = [v for v in m if v > 0]
             mu, beta, perc = self.compParameters(m, mu, beta, perc, fixedBeta=True)
             extremeDists.append((mu, beta, perc))
             #extremeDists.extend([(0, 1, [])] * (mi))
