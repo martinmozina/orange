@@ -573,7 +573,6 @@ class ABCN2Star(RuleLearner):
 
 
     def __call__(self, examples, weight_id=0):
-        print "Examples len: ", len(examples)
         # we begin with an empty set of rules
         all_rules = RuleList()
         # th en, iterate through all classes and learn rule for each class separately
@@ -1731,7 +1730,6 @@ class EVDFitter:
         # old implementations of parameter fitting
         #mi = max(oldMi, percs[-1] + beta * math.log(-math.log(0.95)))
         #mi = percs[-1] + beta * math.log(-math.log(0.95))
-        print numpy.average(vals) - beta * 0.5772156649
         return max(oldMi, numpy.average(vals) - beta * 0.5772156649), beta, None
         #return max(oldMi, mi), beta, None
 
@@ -1817,7 +1815,6 @@ class EVDFitter:
                 if old_ninety:
                     finish = True
                     for v1, v2 in zip(old_ninety, new_ninety):
-                        print v1, v2, abs(v1-v2), len(maxVals[1]), len(maxVals[1])
                         if abs(v1-v2) > 0.5:
                             finish = False
                     if finish:
@@ -1939,7 +1936,6 @@ class BeamFilterAllExamples(BeamFilter):
         for r in rulesStar:
             if r in rset: #rule_to_string(r) in rset:
                 newStar.append(r)
-        print 'star length: ', len(newStar), "took time: ", time.time() - a
         return newStar
 
 class CoversArguments:
