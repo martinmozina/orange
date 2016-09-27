@@ -688,6 +688,7 @@ class ABCN2Star(RuleLearner):
     def add_sub_rules_call(self, rules, examples, weight_id):
         apriori = Orange.statistics.distribution.Distribution(
                             examples.domain.class_var, examples, weight_id)
+        apriori_prob = [a/apriori.abs for a in apriori]
         new_rules = RuleList()
         for r in rules:
             new_rules.append(r)
@@ -714,7 +715,8 @@ class ABCN2Star(RuleLearner):
 
                 for tmpRule in tmpList:
                     # if rule not in rules already, add it to the list
-                    if not True in [Orange.classification.rules.rules_equal(ri, tmpRule) for ri in new_rules] and len(tmpRule.filter.conditions) > 0 and tmpRule.quality > apriori[r.classifier.default_val] / apriori.abs:
+                    if not True in [Orange.classification.rules.rules_equal(ri, tmpRule) for ri in new_rules] and \
+                           len(tmpRule.filter.conditions) > 0 and tmpRule.quality > apriori_prob[int(r.classifier.default_val)]+0.01:
                         new_rules.append(tmpRule)
                     # create new tmpRules, set parent Rule, append them to tmpList2
                     if not True in [Orange.classification.rules.rules_equal(ri, tmpRule) for ri in new_rules]:
